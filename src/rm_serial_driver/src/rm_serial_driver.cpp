@@ -251,9 +251,16 @@ void RMSerialDriver::receiveDataVision()
         crc16::Verify_CRC16_Check_Sum(reinterpret_cast<const uint8_t *>(&packet), sizeof(packet));
 
       if (crc_ok) {
+        // 使用 stringstream 将数据转换为 HEX 字符串
+        std::stringstream ss;
+        ss << std::hex << std::uppercase << std::setfill('0');
+        for (const auto & byte : data) {
+          ss << std::setw(2) << static_cast<int>(byte) << " ";
+        }
         // --- 修改开始：打印接收成功日志 ---
         // 使用限速打印（每 1000 毫秒打印一次），避免高频数据刷屏
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 100, "Receive packet successfully!");
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 100, "Data HEX: %s", ss.str().c_str());
 
         // --- 阶段四：业务逻辑（保持原样）---
         uint8_t detect_color = packet.flags & 0x01;
@@ -286,35 +293,14 @@ void RMSerialDriver::receiveDataVision()
       } else {
         // CRC 校验失败
         // 注意：这里不需要做特殊处理，循环会回到开头，重新寻找下一个 0x5A
-        // RCLCPP_ERROR(get_logger(), "CRC error!");
-        // --- 修改开始：增强 CRC 错误日志 ---
         RCLCPP_ERROR(get_logger(), "CRC error!");
-
-        // 1. 获取指向结构体数据的指针
-        const uint8_t * raw_data = reinterpret_cast<const uint8_t *>(&packet);
-        size_t data_len = sizeof(packet);
-
-        // 2. 手动计算期望的 CRC 值
-        // 注意：根据 crc.cpp，CRC16_INIT 为 0xFFFF。
-        // 计算范围是：总长度 - 2字节（最后的CRC位）
-        uint16_t expected_crc = crc16::Get_CRC16_Check_Sum(raw_data, data_len - 2, 0xFFFF);
-
-        // 3. 解析实际接收到的 CRC 值
-        // 根据 crc.cpp 的 Append 函数：倒数第2个字节是低位，倒数第1个字节是高位
-        uint16_t actual_crc = (static_cast<uint16_t>(raw_data[data_len - 1]) << 8) |
-                              static_cast<uint16_t>(raw_data[data_len - 2]);
-
-        // 打印 CRC 对比信息
-        RCLCPP_ERROR(
-          get_logger(), "Expected CRC: 0x%04X, Actual CRC: 0x%04X", expected_crc, actual_crc);
-
-        // 4. 将结构体内容转换为 HEX 字符串并打印
+        // 如果 CRC 错误，也建议打印出来看看错在哪里
         std::stringstream ss;
         ss << std::hex << std::uppercase << std::setfill('0');
-        for (size_t i = 0; i < data_len; ++i) {
-          ss << std::setw(2) << static_cast<int>(raw_data[i]) << " ";
+        for (const auto & byte : data) {
+          ss << std::setw(2) << static_cast<int>(byte) << " ";
         }
-        RCLCPP_ERROR(get_logger(), "Received Data (HEX): %s", ss.str().c_str());
+        RCLCPP_ERROR(get_logger(), "CRC Fail Data: %s", ss.str().c_str());
       }
 
     } catch (const std::exception & ex) {
