@@ -226,6 +226,10 @@ void RMSerialDriver::receiveDataVision()
         crc16::Verify_CRC16_Check_Sum(reinterpret_cast<const uint8_t *>(&packet), sizeof(packet));
 
       if (crc_ok) {
+        // --- 修改开始：打印接收成功日志 ---
+        // 使用限速打印（每 1000 毫秒打印一次），避免高频数据刷屏
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Receive packet successfully!");
+
         // --- 阶段四：业务逻辑（保持原样）---
         uint8_t detect_color = packet.flags & 0x01;
         if (!initial_set_param_ || detect_color != previous_receive_color_) {
