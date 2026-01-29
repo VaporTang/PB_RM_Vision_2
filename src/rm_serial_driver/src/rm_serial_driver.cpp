@@ -23,14 +23,18 @@
 #include <rclcpp/logging.hpp>
 #include <rclcpp/qos.hpp>
 #include <rclcpp/utilities.hpp>
+#include <rm_referee_ros2/msg/robot_status.hpp>
+#include <rm_referee_ros2/msg/shoot_data.hpp>
 #include <serial_driver/serial_driver.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 // C++ system
 #include <cstdint>
 #include <functional>
+#include <iomanip>
 #include <map>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -93,7 +97,14 @@ RMSerialDriver::RMSerialDriver(const rclcpp::NodeOptions & options)
     "/tracker/target", rclcpp::SensorDataQoS(),
     std::bind(&RMSerialDriver::sendDataVision, this, std::placeholders::_1));
   cmd_vel_sub_ = this->create_subscription<geometry_msgs::msg::Twist>(
-    "/cmd_vel", 10, std::bind(&RMSerialDriver::sendDataTwist, this, std::placeholders::_1));
+    "/cmd_vel_chassis", 10, std::bind(&RMSerialDriver::sendDataTwist, this, std::placeholders::_1));
+  // Create Subscription for shooting data
+  shoot_data_sub_ = this->create_subscription<rm_referee_ros2::msg::ShootData>(
+    "/referee/shoot_data", 10,
+    std::bind(&RMSerialDriver::sendShootData, this, std::placeholders::_1));
+  robot_status_sub_ = this->create_subscription<rm_referee_ros2::msg::RobotStatus>(
+    "/referee/robot_status", 10,
+    std::bind(&RMSerialDriver::sendRobotStatus, this, std::placeholders::_1));
 }
 
 RMSerialDriver::~RMSerialDriver()
@@ -111,59 +122,174 @@ RMSerialDriver::~RMSerialDriver()
   }
 }
 
+// void RMSerialDriver::receiveDataVision()
+// {
+//   std::vector<uint8_t> header(1);
+//   std::vector<uint8_t> data;
+//   data.reserve(sizeof(ReceivePacketVision));
+
+//   while (rclcpp::ok()) {
+//     try {
+//       serial_driver_->port()->receive(header);
+
+//       if (header[0] == 0x5A) {
+//         data.resize(sizeof(ReceivePacketVision) - 1);
+//         serial_driver_->port()->receive(data);
+
+//         data.insert(data.begin(), header[0]);
+//         ReceivePacketVision packet = fromVector<ReceivePacketVision>(data);
+
+//         bool crc_ok =
+//           crc16::Verify_CRC16_Check_Sum(reinterpret_cast<const uint8_t *>(&packet), sizeof(packet));
+//         if (crc_ok) {
+//           uint8_t detect_color = packet.flags & 0x01;
+//           if (!initial_set_param_ || detect_color != previous_receive_color_) {
+//             setParam(rclcpp::Parameter("detect_color", detect_color));
+//             previous_receive_color_ = detect_color;
+//           }
+
+//           if (packet.flags & 0x02) {
+//             resetTracker();
+//           }
+
+//           geometry_msgs::msg::TransformStamped t;
+//           timestamp_offset_ = this->get_parameter("timestamp_offset").as_double();
+//           t.header.stamp = this->now() + rclcpp::Duration::from_seconds(timestamp_offset_);
+//           t.header.frame_id = "odom";
+//           t.child_frame_id = "gimbal_link";
+//           tf2::Quaternion q;
+//           q.setRPY(packet.roll, packet.pitch, packet.yaw);
+//           t.transform.rotation = tf2::toMsg(q);
+//           tf_broadcaster_->sendTransform(t);
+
+//           if (abs(packet.aim_x) > 0.01) {
+//             aiming_point_.header.stamp = this->now();
+//             aiming_point_.pose.position.x = packet.aim_x;
+//             aiming_point_.pose.position.y = packet.aim_y;
+//             aiming_point_.pose.position.z = packet.aim_z;
+//             marker_pub_->publish(aiming_point_);
+//           }
+//         } else {
+//           RCLCPP_ERROR(get_logger(), "CRC error!");
+//         }
+//       } else {
+//         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 20, "Invalid header: %02X", header[0]);
+//       }
+//     } catch (const std::exception & ex) {
+//       RCLCPP_ERROR_THROTTLE(
+//         get_logger(), *get_clock(), 20, "Error while receiving data: %s", ex.what());
+//       reopenPort();
+//     }
+//   }
+// }
+
 void RMSerialDriver::receiveDataVision()
 {
+  // 1. 预分配内存（移出循环，避免频繁 new/delete）
   std::vector<uint8_t> header(1);
   std::vector<uint8_t> data;
+  // 预留足够空间，避免 vector 自动扩容带来的拷贝开销
   data.reserve(sizeof(ReceivePacketVision));
 
   while (rclcpp::ok()) {
     try {
-      serial_driver_->port()->receive(header);
+      // --- 阶段一：同步（寻找帧头）---
+      // 持续读取单字节，直到找到帧头 0x5A
+      while (rclcpp::ok()) {
+        serial_driver_->port()->receive(header);
 
-      if (header[0] == 0x5A) {
-        data.resize(sizeof(ReceivePacketVision) - 1);
-        serial_driver_->port()->receive(data);
+        if (header.empty()) {
+          continue;  // 超时未读到数据，重试
+        }
+        
+        if (header[0] == 0x5A) {
+          break;  // 找到帧头
+        }
+        // 如果不是帧头，继续循环读取下一个字节，直到找到为止
+        // 可选：在这里添加一些调试打印，但不要太频繁
+      }
 
-        data.insert(data.begin(), header[0]);
-        ReceivePacketVision packet = fromVector<ReceivePacketVision>(data);
+      // --- 阶段二：读取负载 ---
+      // 既然已经拿到了 0x5A，那么剩下的数据长度是确定的
+      // 大小 = 结构体总大小 - 1 (帧头已被读取)
+      data.resize(sizeof(ReceivePacketVision) - 1);
+      serial_driver_->port()->receive(data);
 
-        bool crc_ok =
-          crc16::Verify_CRC16_Check_Sum(reinterpret_cast<const uint8_t *>(&packet), sizeof(packet));
-        if (crc_ok) {
-          if (!initial_set_param_ || packet.detect_color != previous_receive_color_) {
-            setParam(rclcpp::Parameter("detect_color", packet.detect_color));
-            previous_receive_color_ = packet.detect_color;
-          }
+      // --- 阶段三：重组与校验 ---
+      // 将帧头插回数据最前端，还原完整的包以便校验
+      data.insert(data.begin(), header[0]);
 
-          if (packet.reset_tracker) {
-            resetTracker();
-          }
+      // 使用模板函数转换数据
+      ReceivePacketVision packet = fromVector<ReceivePacketVision>(data);
 
-          geometry_msgs::msg::TransformStamped t;
-          timestamp_offset_ = this->get_parameter("timestamp_offset").as_double();
-          t.header.stamp = this->now() + rclcpp::Duration::from_seconds(timestamp_offset_);
-          t.header.frame_id = "odom";
-          t.child_frame_id = "gimbal_link";
-          tf2::Quaternion q;
-          q.setRPY(packet.roll, packet.pitch, packet.yaw);
-          t.transform.rotation = tf2::toMsg(q);
-          tf_broadcaster_->sendTransform(t);
+      bool crc_ok =
+        crc16::Verify_CRC16_Check_Sum(reinterpret_cast<const uint8_t *>(&packet), sizeof(packet));
 
-          if (abs(packet.aim_x) > 0.01) {
-            aiming_point_.header.stamp = this->now();
-            aiming_point_.pose.position.x = packet.aim_x;
-            aiming_point_.pose.position.y = packet.aim_y;
-            aiming_point_.pose.position.z = packet.aim_z;
-            marker_pub_->publish(aiming_point_);
-          }
-        } else {
-          RCLCPP_ERROR(get_logger(), "CRC error!");
+      if (crc_ok) {
+        // --- 阶段四：业务逻辑（保持原样）---
+        uint8_t detect_color = packet.flags & 0x01;
+        if (!initial_set_param_ || detect_color != previous_receive_color_) {
+          setParam(rclcpp::Parameter("detect_color", detect_color));
+          previous_receive_color_ = detect_color;
+        }
+
+        if (packet.flags & 0x02) {
+          resetTracker();
+        }
+
+        geometry_msgs::msg::TransformStamped t;
+        timestamp_offset_ = this->get_parameter("timestamp_offset").as_double();
+        t.header.stamp = this->now() + rclcpp::Duration::from_seconds(timestamp_offset_);
+        t.header.frame_id = "odom";
+        t.child_frame_id = "gimbal_link";
+        tf2::Quaternion q;
+        q.setRPY(packet.roll, packet.pitch, packet.yaw);
+        t.transform.rotation = tf2::toMsg(q);
+        tf_broadcaster_->sendTransform(t);
+
+        if (abs(packet.aim_x) > 0.01) {
+          aiming_point_.header.stamp = this->now();
+          aiming_point_.pose.position.x = packet.aim_x;
+          aiming_point_.pose.position.y = packet.aim_y;
+          aiming_point_.pose.position.z = packet.aim_z;
+          marker_pub_->publish(aiming_point_);
         }
       } else {
-        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 20, "Invalid header: %02X", header[0]);
+        // CRC 校验失败
+        // 注意：这里不需要做特殊处理，循环会回到开头，重新寻找下一个 0x5A
+        // RCLCPP_ERROR(get_logger(), "CRC error!");
+        // --- 修改开始：增强 CRC 错误日志 ---
+        RCLCPP_ERROR(get_logger(), "CRC error!");
+
+        // 1. 获取指向结构体数据的指针
+        const uint8_t * raw_data = reinterpret_cast<const uint8_t *>(&packet);
+        size_t data_len = sizeof(packet);
+
+        // 2. 手动计算期望的 CRC 值
+        // 注意：根据 crc.cpp，CRC16_INIT 为 0xFFFF。
+        // 计算范围是：总长度 - 2字节（最后的CRC位）
+        uint16_t expected_crc = crc16::Get_CRC16_Check_Sum(raw_data, data_len - 2, 0xFFFF);
+
+        // 3. 解析实际接收到的 CRC 值
+        // 根据 crc.cpp 的 Append 函数：倒数第2个字节是低位，倒数第1个字节是高位
+        uint16_t actual_crc = (static_cast<uint16_t>(raw_data[data_len - 1]) << 8) |
+                              static_cast<uint16_t>(raw_data[data_len - 2]);
+
+        // 打印 CRC 对比信息
+        RCLCPP_ERROR(
+          get_logger(), "Expected CRC: 0x%04X, Actual CRC: 0x%04X", expected_crc, actual_crc);
+
+        // 4. 将结构体内容转换为 HEX 字符串并打印
+        std::stringstream ss;
+        ss << std::hex << std::uppercase << std::setfill('0');
+        for (size_t i = 0; i < data_len; ++i) {
+          ss << std::setw(2) << static_cast<int>(raw_data[i]) << " ";
+        }
+        RCLCPP_ERROR(get_logger(), "Received Data (HEX): %s", ss.str().c_str());
       }
+
     } catch (const std::exception & ex) {
+      // 串口底层错误（如拔掉USB）
       RCLCPP_ERROR_THROTTLE(
         get_logger(), *get_clock(), 20, "Error while receiving data: %s", ex.what());
       reopenPort();
@@ -228,6 +354,68 @@ void RMSerialDriver::sendDataTwist(const geometry_msgs::msg::Twist::SharedPtr ms
   } catch (const std::exception & ex) {
     RCLCPP_ERROR(get_logger(), "Error while sending data: %s", ex.what());
     reopenPort();
+  }
+}
+
+// 发送射击数据的函数
+void RMSerialDriver::sendShootData(const rm_referee_ros2::msg::ShootData::SharedPtr msg)
+{
+  try {
+    ShootDataPacket packet;  // 创建数据包结构体
+
+    // 复制数据
+    packet.bullet_type = msg->bullet_type;
+    packet.shooter_id = msg->shooter_id;
+    packet.bullet_freq = msg->bullet_freq;
+    packet.bullet_speed = msg->bullet_speed;
+
+    // 计算 CRC 校验和
+    crc16::Append_CRC16_Check_Sum(reinterpret_cast<uint8_t *>(&packet), sizeof(packet));
+
+    std::vector<uint8_t> data = toVector(packet);
+
+    serial_driver_->port()->send(data);
+
+  } catch (const std::exception & ex) {
+    RCLCPP_ERROR(get_logger(), "Error while sending shoot data: %s", ex.what());
+    reopenPort();  // 异常处理和重启串口
+  }
+}
+
+// 发送比赛机器人血量数据的函数
+void RMSerialDriver::sendRobotStatus(const rm_referee_ros2::msg::RobotStatus::SharedPtr msg)
+{
+  try {
+    RobotStatusPacket packet;  // 创建数据包结构体
+
+    // 复制数据
+    packet.robot_id = msg->robot_id;
+    packet.robot_level = msg->robot_level;
+    packet.current_hp = msg->current_hp;
+    packet.maximum_hp = msg->maximum_hp;
+    packet.shooter_barrel_cooling_value = msg->shooter_barrel_cooling_value;
+    packet.shooter_barrel_heat_limit = msg->shooter_barrel_heat_limit;
+    packet.chassis_power_limit = msg->chassis_power_limit;
+    // packet.power_management_gimbal_output = msg->power_management_gimbal_output;
+    // packet.power_management_chassis_output = msg->power_management_chassis_output;
+    // packet.power_management_shooter_output = msg->power_management_shooter_output;
+
+    // 修改处：手动进行打包 (Packing)
+    packet.power_management = 0x00;  // 初始化
+    if (msg->power_management_gimbal_output) packet.power_management |= (1 << 0);
+    if (msg->power_management_chassis_output) packet.power_management |= (1 << 1);
+    if (msg->power_management_shooter_output) packet.power_management |= (1 << 2);
+
+    // 计算 CRC 校验和
+    crc16::Append_CRC16_Check_Sum(reinterpret_cast<uint8_t *>(&packet), sizeof(packet));
+
+    std::vector<uint8_t> data = toVector(packet);
+
+    serial_driver_->port()->send(data);
+
+  } catch (const std::exception & ex) {
+    RCLCPP_ERROR(get_logger(), "Error while sending robot status: %s", ex.what());
+    reopenPort();  // 异常处理和重启串口
   }
 }
 
@@ -355,14 +543,15 @@ void RMSerialDriver::setParam(const rclcpp::Parameter & param)
       });
   }
 
-    if (!rune_detector_param_client_->service_is_ready()) {
+  if (!rune_detector_param_client_->service_is_ready()) {
     RCLCPP_WARN(get_logger(), "Rune service not ready, skipping parameter set");
     return;
   }
 
   if (
     !set_rune_detector_param_future_.valid() ||
-    set_rune_detector_param_future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+    set_rune_detector_param_future_.wait_for(std::chrono::seconds(0)) ==
+      std::future_status::ready) {
     RCLCPP_INFO(get_logger(), "Setting rune detect_color to %ld...", param.as_int());
     set_rune_detector_param_future_ = rune_detector_param_client_->set_parameters(
       {param}, [this, param](const ResultFuturePtr & results) {
@@ -372,7 +561,7 @@ void RMSerialDriver::setParam(const rclcpp::Parameter & param)
             return;
           }
         }
-        RCLCPP_INFO(get_logger(), "Successfully set rune detect_color to %ld!", 1-param.as_int());
+        RCLCPP_INFO(get_logger(), "Successfully set rune detect_color to %ld!", 1 - param.as_int());
       });
   }
 }

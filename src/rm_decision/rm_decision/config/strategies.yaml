@@ -1,0 +1,81 @@
+decision:
+  # 机器人ID (哨兵机器人默认为7)
+  robot_id: 7
+  
+  # 血量阈值，低于此值时触发撤退策略
+  hp_threshold: 300
+  
+  # 子弹阈值，低于此值时触发撤退策略 (仅触发一次)
+  bullet_threshold: 50
+  
+  # 比赛开始后延迟启动进攻策略的时间 (秒)
+  start_delay: 3.0
+  
+  # 进攻策略
+  offensive_strategies:
+    # 策略1
+    strategy_1:
+      # 导航点1 [x, y, z, orientation_x, orientation_y, orientation_z, orientation_w]
+      nav_point_1: [1.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+      # 导航点1完成后的延迟 (秒)
+      delay_1: 2.0
+      
+      # 导航点2
+      nav_point_2: [3.0, 4.0, 0.0, 0.0, 0.0, 0.707, 0.707]
+      # 导航点2完成后的延迟 (秒)
+      delay_2: 2.0
+      
+      # 导航点3
+      nav_point_3: [5.0, 2.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+      # 导航点3完成后的延迟 (秒)
+      delay_3: 2.0
+      
+      # 导航点4 (可选)
+      nav_point_4: [3.0, 0.0, 0.0, 0.0, 0.0, 0.707, -0.707]
+      # 导航点4完成后的延迟 (秒)
+      delay_4: 2.0
+      
+      # 循环间延迟 (第4点到第3点，或第3点到第3点的延迟)
+      loop_delay: 3.0
+      
+    # 策略2 (可以添加更多策略)
+    strategy_2:
+      nav_point_1: [2.0, 3.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+      delay_1: 2.0
+      
+      nav_point_2: [4.0, 5.0, 0.0, 0.0, 0.0, 0.707, 0.707]
+      delay_2: 2.0
+      
+      nav_point_3: [6.0, 3.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+      delay_3: 2.0
+      
+      # 该策略未定义第4个点，将在第3点循环
+      loop_delay: 3.0
+  
+  # 默认使用的进攻策略
+  default_offensive_strategy: "strategy_1"
+  
+  # 撤退策略
+  defensive_strategies:
+    # 策略1
+    strategy_1:
+      # 导航点1
+      nav_point_1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+      # 导航点1完成后的延迟 (秒)
+      delay_1: 1.0
+      
+      # 导航点2
+      nav_point_2: [-1.0, -1.0, 0.0, 0.0, 0.0, -0.707, 0.707]
+      # 撤退完成后等待恢复的时间 (秒)
+      recovery_delay: 10.0
+    
+    # 策略2 (可以添加更多策略)
+    strategy_2:
+      nav_point_1: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+      delay_1: 1.0
+      
+      nav_point_2: [-2.0, -2.0, 0.0, 0.0, 0.0, -0.707, 0.707]
+      recovery_delay: 15.0
+  
+  # 默认使用的撤退策略
+  default_defensive_strategy: "strategy_1" 

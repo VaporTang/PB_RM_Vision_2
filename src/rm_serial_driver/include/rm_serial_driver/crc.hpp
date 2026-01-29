@@ -9,6 +9,15 @@
 namespace crc16
 {
 /**
+  * @brief CRC16 Caculation function
+  * @param[in] pchMessage : Data to Verify,
+  * @param[in] dwLength : Stream length = Data + checksum
+  * @param[in] wCRC : CRC16 init value(default : 0xFFFF)
+  * @return : CRC16 checksum
+  */
+uint16_t Get_CRC16_Check_Sum(const uint8_t * pchMessage, uint32_t dwLength, uint16_t wCRC);
+
+/**
   * @brief CRC16 Verify function
   * @param[in] pchMessage : Data to Verify,
   * @param[in] dwLength : Stream length = Data + checksum

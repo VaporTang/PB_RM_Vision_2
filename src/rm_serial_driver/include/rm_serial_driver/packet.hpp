@@ -13,9 +13,7 @@ namespace rm_serial_driver
 struct ReceivePacketVision
 {
   uint8_t header = 0x5A;
-  uint8_t detect_color : 1;  // 0-red 1-blue
-  bool reset_tracker : 1;
-  uint8_t reserved : 6;
+  uint8_t flags = 0;  // bit0: detect_color (0-red 1-blue), bit1: reset_tracker, bit2-7: reserved
   float roll;
   float pitch;
   float yaw;
@@ -23,6 +21,37 @@ struct ReceivePacketVision
   float aim_y;
   float aim_z;
   uint16_t checksum = 0;
+} __attribute__((packed));
+
+// 比赛机器人血量数据结构体
+struct RobotStatusPacket
+{
+  uint8_t header = 0xA7;
+  uint8_t robot_id;
+  uint8_t robot_level;
+  uint16_t current_hp;
+  uint16_t maximum_hp;
+  uint16_t shooter_barrel_cooling_value;
+  uint16_t shooter_barrel_heat_limit;
+  uint16_t chassis_power_limit;
+  // uint8_t power_management_gimbal_output : 1;
+  // uint8_t power_management_chassis_output : 1;
+  // uint8_t power_management_shooter_output : 1;
+  // 修改处：用一个字节替代原来的三个位域
+  // bit0: gimbal, bit1: chassis, bit2: shooter
+  uint8_t power_management;
+  uint16_t checksum = 0;  // 校验和 edited by VaporTang
+} __attribute__((packed));
+
+// 定义射击数据包结构体
+struct ShootDataPacket
+{
+  uint8_t header = 0xA6;  // 你可以根据需要设置一个合适的头部
+  uint8_t bullet_type;    // 子弹类型: 1(17mm弹丸), 2(42mm弹丸)
+  uint8_t shooter_id;     // 发射机构ID: 1,2为17mm, 3为42mm
+  uint8_t bullet_freq;    // 射频(Hz)
+  float bullet_speed;     // 射速(m/s)
+  uint16_t checksum = 0;  // 校验和
 } __attribute__((packed));
 
 struct SendPacketVision

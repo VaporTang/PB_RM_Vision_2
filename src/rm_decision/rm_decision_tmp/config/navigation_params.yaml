@@ -1,0 +1,12 @@
+/**:
+  ros__parameters:
+    use_sim_time: true
+
+simple_navigation_node:
+  ros__parameters:
+    cmd_vel_topic: "/cmd_vel_chassis"
+    game_status_topic: "/referee/game_status"
+    linear_speed: 0.3
+    control_frequency: 20.0
+    move_distance: 1.5
+    move_time_factor: 5.0 
