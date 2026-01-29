@@ -201,7 +201,7 @@ void RMSerialDriver::receiveDataVision()
         if (header.empty()) {
           continue;  // 超时未读到数据，重试
         }
-        
+
         if (header[0] == 0x5A) {
           break;  // 找到帧头
         }
