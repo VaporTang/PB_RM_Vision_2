@@ -122,67 +122,6 @@ RMSerialDriver::~RMSerialDriver()
   }
 }
 
-// void RMSerialDriver::receiveDataVision()
-// {
-//   std::vector<uint8_t> header(1);
-//   std::vector<uint8_t> data;
-//   data.reserve(sizeof(ReceivePacketVision));
-
-//   while (rclcpp::ok()) {
-//     try {
-//       serial_driver_->port()->receive(header);
-
-//       if (header[0] == 0x5A) {
-//         data.resize(sizeof(ReceivePacketVision) - 1);
-//         serial_driver_->port()->receive(data);
-
-//         data.insert(data.begin(), header[0]);
-//         ReceivePacketVision packet = fromVector<ReceivePacketVision>(data);
-
-//         bool crc_ok =
-//           crc16::Verify_CRC16_Check_Sum(reinterpret_cast<const uint8_t *>(&packet), sizeof(packet));
-//         if (crc_ok) {
-//           uint8_t detect_color = packet.flags & 0x01;
-//           if (!initial_set_param_ || detect_color != previous_receive_color_) {
-//             setParam(rclcpp::Parameter("detect_color", detect_color));
-//             previous_receive_color_ = detect_color;
-//           }
-
-//           if (packet.flags & 0x02) {
-//             resetTracker();
-//           }
-
-//           geometry_msgs::msg::TransformStamped t;
-//           timestamp_offset_ = this->get_parameter("timestamp_offset").as_double();
-//           t.header.stamp = this->now() + rclcpp::Duration::from_seconds(timestamp_offset_);
-//           t.header.frame_id = "odom";
-//           t.child_frame_id = "gimbal_link";
-//           tf2::Quaternion q;
-//           q.setRPY(packet.roll, packet.pitch, packet.yaw);
-//           t.transform.rotation = tf2::toMsg(q);
-//           tf_broadcaster_->sendTransform(t);
-
-//           if (abs(packet.aim_x) > 0.01) {
-//             aiming_point_.header.stamp = this->now();
-//             aiming_point_.pose.position.x = packet.aim_x;
-//             aiming_point_.pose.position.y = packet.aim_y;
-//             aiming_point_.pose.position.z = packet.aim_z;
-//             marker_pub_->publish(aiming_point_);
-//           }
-//         } else {
-//           RCLCPP_ERROR(get_logger(), "CRC error!");
-//         }
-//       } else {
-//         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 20, "Invalid header: %02X", header[0]);
-//       }
-//     } catch (const std::exception & ex) {
-//       RCLCPP_ERROR_THROTTLE(
-//         get_logger(), *get_clock(), 20, "Error while receiving data: %s", ex.what());
-//       reopenPort();
-//     }
-//   }
-// }
-
 void RMSerialDriver::receiveDataVision()
 {
   // 1. 预分配内存（移出循环，避免频繁 new/delete）
