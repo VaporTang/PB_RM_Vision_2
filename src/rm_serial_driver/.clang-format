@@ -1,18 +1,45 @@
 ---
-Language: Cpp
-BasedOnStyle: Google
+Language:        Cpp
+Standard:        c++17
+BasedOnStyle:    Google
 
-AccessModifierOffset: -2
-AlignAfterOpenBracket: AlwaysBreak
-BraceWrapping:
-  AfterClass: true
-  AfterFunction: true
-  AfterNamespace: true
-  AfterStruct: true
+# --- 关键修复 1: 解决 "漂移到右边" 的问题 ---
+# OuterScope 强制 lambda 内部缩进只比 'create_service' 这一行多一级
+# 而不是对齐到那一长串的参数后面
+LambdaBodyIndentation: Signature
+
+# --- 关键修复 2: 强制参数换行 ---
+# 如果参数列表很长（ROS2经常这样），强制把参数折行，
+# 这样 lambda 就会起一行写，而不是挤在后面
+AlignAfterOpenBracket: BlockIndent
+BinPackArguments: false
+
+# --- 关键修复 3: 解决空格和紧凑度 ---
+# 把缩进设为 2
+IndentWidth:     2
+TabWidth:        2
+ColumnLimit:     100
+
+# 确保箭头 -> 周围没有空格
+SpaceAroundPointerQualifiers: Default
+
+# --- 括号风格 ---
 BreakBeforeBraces: Custom
-ColumnLimit: 100
-ConstructorInitializerIndentWidth: 0
-ContinuationIndentWidth: 2
-DerivePointerAlignment: false
-PointerAlignment: Middle
-ReflowComments: false
+BraceWrapping:
+  AfterClass:      false  # 修改：类名后不换行
+  AfterControlStatement: false
+  AfterEnum:       false
+  AfterFunction:   false  # 修改：函数名后不换行
+  AfterNamespace:  false
+  AfterStruct:     false
+  AfterUnion:      false
+  AfterExternBlock: false
+  BeforeCatch:     false
+  BeforeElse:      false
+  # 关键保持：Lambda 的大括号依然保持紧凑，不换行
+  BeforeLambdaBody: false
+
+# --- 允许短代码单行 ---
+AllowShortLambdasOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: WithoutElse
+...

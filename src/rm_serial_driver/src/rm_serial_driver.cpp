@@ -42,13 +42,11 @@
 #include "rm_serial_driver/packet.hpp"
 #include "rm_serial_driver/rm_serial_driver.hpp"
 
-namespace rm_serial_driver
-{
-RMSerialDriver::RMSerialDriver(const rclcpp::NodeOptions & options)
-: Node("rm_serial_driver", options),
-  owned_ctx_{new IoContext(2)},
-  serial_driver_{new drivers::serial_driver::SerialDriver(*owned_ctx_)}
-{
+namespace rm_serial_driver {
+RMSerialDriver::RMSerialDriver(const rclcpp::NodeOptions& options)
+    : Node("rm_serial_driver", options),
+      owned_ctx_{new IoContext(2)},
+      serial_driver_{new drivers::serial_driver::SerialDriver(*owned_ctx_)} {
   RCLCPP_INFO(get_logger(), "Start RMSerialDriver!");
 
   getParams();
@@ -64,7 +62,7 @@ RMSerialDriver::RMSerialDriver(const rclcpp::NodeOptions & options)
   // Detect parameter client
   detector_param_client_ = std::make_shared<rclcpp::AsyncParametersClient>(this, "armor_detector");
   rune_detector_param_client_ =
-    std::make_shared<rclcpp::AsyncParametersClient>(this, "rm_rune_detector");
+      std::make_shared<rclcpp::AsyncParametersClient>(this, "rm_rune_detector");
 
   // Tracker reset service client
   reset_tracker_client_ = this->create_client<std_srvs::srv::Trigger>("/tracker/reset");
@@ -75,9 +73,10 @@ RMSerialDriver::RMSerialDriver(const rclcpp::NodeOptions & options)
       serial_driver_->port()->open();
       receive_thread_ = std::thread(&RMSerialDriver::receiveDataVision, this);
     }
-  } catch (const std::exception & ex) {
+  } catch (const std::exception& ex) {
     RCLCPP_ERROR(
-      get_logger(), "Error creating serial port: %s - %s", device_name_.c_str(), ex.what());
+        get_logger(), "Error creating serial port: %s - %s", device_name_.c_str(), ex.what()
+    );
     throw ex;
   }
 
@@ -94,21 +93,27 @@ RMSerialDriver::RMSerialDriver(const rclcpp::NodeOptions & options)
 
   // Create Subscription
   target_sub_ = this->create_subscription<auto_aim_interfaces::msg::Target>(
-    "/tracker/target", rclcpp::SensorDataQoS(),
-    std::bind(&RMSerialDriver::sendDataVision, this, std::placeholders::_1));
+      "/tracker/target",
+      rclcpp::SensorDataQoS(),
+      std::bind(&RMSerialDriver::sendDataVision, this, std::placeholders::_1)
+  );
   cmd_vel_sub_ = this->create_subscription<geometry_msgs::msg::Twist>(
-    "/cmd_vel_chassis", 10, std::bind(&RMSerialDriver::sendDataTwist, this, std::placeholders::_1));
+      "/cmd_vel_chassis", 10, std::bind(&RMSerialDriver::sendDataTwist, this, std::placeholders::_1)
+  );
   // Create Subscription for shooting data
   shoot_data_sub_ = this->create_subscription<rm_referee_ros2::msg::ShootData>(
-    "/referee/shoot_data", 10,
-    std::bind(&RMSerialDriver::sendShootData, this, std::placeholders::_1));
+      "/referee/shoot_data",
+      10,
+      std::bind(&RMSerialDriver::sendShootData, this, std::placeholders::_1)
+  );
   robot_status_sub_ = this->create_subscription<rm_referee_ros2::msg::RobotStatus>(
-    "/referee/robot_status", 10,
-    std::bind(&RMSerialDriver::sendRobotStatus, this, std::placeholders::_1));
+      "/referee/robot_status",
+      10,
+      std::bind(&RMSerialDriver::sendRobotStatus, this, std::placeholders::_1)
+  );
 }
 
-RMSerialDriver::~RMSerialDriver()
-{
+RMSerialDriver::~RMSerialDriver() {
   if (receive_thread_.joinable()) {
     receive_thread_.join();
   }
@@ -122,8 +127,7 @@ RMSerialDriver::~RMSerialDriver()
   }
 }
 
-void RMSerialDriver::receiveDataVision()
-{
+void RMSerialDriver::receiveDataVision() {
   // 1. 预分配内存（移出循环，避免频繁 new/delete）
   std::vector<uint8_t> header(1);
   std::vector<uint8_t> data;
@@ -172,7 +176,7 @@ void RMSerialDriver::receiveDataVision()
           // 每次只读1个字节，这样即便数据来得慢，也会在这里阻塞等待
           serial_driver_->port()->receive(byte_buf);
           data.push_back(byte_buf[0]);
-        } catch (const std::exception & ex) {
+        } catch (const std::exception& ex) {
           RCLCPP_WARN(get_logger(), "Serial receive timeout or error: %s", ex.what());
           break;  // 跳出循环，让外层 catch 处理或重试
         }
@@ -187,13 +191,13 @@ void RMSerialDriver::receiveDataVision()
       ReceivePacketVision packet = fromVector<ReceivePacketVision>(data);
 
       bool crc_ok =
-        crc16::Verify_CRC16_Check_Sum(reinterpret_cast<const uint8_t *>(&packet), sizeof(packet));
+          crc16::Verify_CRC16_Check_Sum(reinterpret_cast<const uint8_t*>(&packet), sizeof(packet));
 
       if (crc_ok) {
         // 使用 stringstream 将数据转换为 HEX 字符串
         std::stringstream ss;
         ss << std::hex << std::uppercase << std::setfill('0');
-        for (const auto & byte : data) {
+        for (const auto& byte : data) {
           ss << std::setw(2) << static_cast<int>(byte) << " ";
         }
         // --- 修改开始：打印接收成功日志 ---
@@ -236,26 +240,35 @@ void RMSerialDriver::receiveDataVision()
         // 如果 CRC 错误，也建议打印出来看看错在哪里
         std::stringstream ss;
         ss << std::hex << std::uppercase << std::setfill('0');
-        for (const auto & byte : data) {
+        for (const auto& byte : data) {
           ss << std::setw(2) << static_cast<int>(byte) << " ";
         }
         RCLCPP_ERROR(get_logger(), "CRC Fail Data: %s", ss.str().c_str());
       }
 
-    } catch (const std::exception & ex) {
+    } catch (const std::exception& ex) {
       // 串口底层错误（如拔掉USB）
       RCLCPP_ERROR_THROTTLE(
-        get_logger(), *get_clock(), 20, "Error while receiving data: %s", ex.what());
+          get_logger(), *get_clock(), 20, "Error while receiving data: %s", ex.what()
+      );
       reopenPort();
     }
   }
 }
 
-void RMSerialDriver::sendDataVision(const auto_aim_interfaces::msg::Target::SharedPtr msg)
-{
+void RMSerialDriver::sendDataVision(const auto_aim_interfaces::msg::Target::SharedPtr msg) {
   const static std::map<std::string, uint8_t> ID_UNIT8_MAP{
-    {"", 0},  {"outpost", 0}, {"1", 1}, {"1", 1},     {"2", 2},
-    {"3", 3}, {"4", 4},       {"5", 5}, {"guard", 6}, {"base", 7}};
+      {"", 0},
+      {"outpost", 0},
+      {"1", 1},
+      {"1", 1},
+      {"2", 2},
+      {"3", 3},
+      {"4", 4},
+      {"5", 5},
+      {"guard", 6},
+      {"base", 7}
+  };
 
   try {
     SendPacketVision packet;
@@ -273,7 +286,7 @@ void RMSerialDriver::sendDataVision(const auto_aim_interfaces::msg::Target::Shar
     packet.r1 = msg->radius_1;
     packet.r2 = msg->radius_2;
     packet.dz = msg->dz;
-    crc16::Append_CRC16_Check_Sum(reinterpret_cast<uint8_t *>(&packet), sizeof(packet));
+    crc16::Append_CRC16_Check_Sum(reinterpret_cast<uint8_t*>(&packet), sizeof(packet));
 
     std::vector<uint8_t> data = toVector(packet);
 
@@ -283,14 +296,13 @@ void RMSerialDriver::sendDataVision(const auto_aim_interfaces::msg::Target::Shar
     latency.data = (this->now() - msg->header.stamp).seconds() * 1000.0;
     RCLCPP_DEBUG_STREAM(get_logger(), "Total latency: " + std::to_string(latency.data) + "ms");
     latency_pub_->publish(latency);
-  } catch (const std::exception & ex) {
+  } catch (const std::exception& ex) {
     RCLCPP_ERROR(get_logger(), "Error while sending data: %s", ex.what());
     reopenPort();
   }
 }
 
-void RMSerialDriver::sendDataTwist(const geometry_msgs::msg::Twist::SharedPtr msg)
-{
+void RMSerialDriver::sendDataTwist(const geometry_msgs::msg::Twist::SharedPtr msg) {
   try {
     SendPacketTwist packet;
     packet.linear_x = msg->linear.x;
@@ -299,21 +311,20 @@ void RMSerialDriver::sendDataTwist(const geometry_msgs::msg::Twist::SharedPtr ms
     packet.angular_x = msg->angular.x;
     packet.angular_y = msg->angular.y;
     packet.angular_z = msg->angular.z;
-    crc16::Append_CRC16_Check_Sum(reinterpret_cast<uint8_t *>(&packet), sizeof(packet));
+    crc16::Append_CRC16_Check_Sum(reinterpret_cast<uint8_t*>(&packet), sizeof(packet));
 
     std::vector<uint8_t> data = toVector(packet);
 
     serial_driver_->port()->send(data);
 
-  } catch (const std::exception & ex) {
+  } catch (const std::exception& ex) {
     RCLCPP_ERROR(get_logger(), "Error while sending data: %s", ex.what());
     reopenPort();
   }
 }
 
 // 发送射击数据的函数
-void RMSerialDriver::sendShootData(const rm_referee_ros2::msg::ShootData::SharedPtr msg)
-{
+void RMSerialDriver::sendShootData(const rm_referee_ros2::msg::ShootData::SharedPtr msg) {
   try {
     ShootDataPacket packet;  // 创建数据包结构体
 
@@ -324,21 +335,20 @@ void RMSerialDriver::sendShootData(const rm_referee_ros2::msg::ShootData::Shared
     packet.bullet_speed = msg->bullet_speed;
 
     // 计算 CRC 校验和
-    crc16::Append_CRC16_Check_Sum(reinterpret_cast<uint8_t *>(&packet), sizeof(packet));
+    crc16::Append_CRC16_Check_Sum(reinterpret_cast<uint8_t*>(&packet), sizeof(packet));
 
     std::vector<uint8_t> data = toVector(packet);
 
     serial_driver_->port()->send(data);
 
-  } catch (const std::exception & ex) {
+  } catch (const std::exception& ex) {
     RCLCPP_ERROR(get_logger(), "Error while sending shoot data: %s", ex.what());
     reopenPort();  // 异常处理和重启串口
   }
 }
 
 // 发送比赛机器人血量数据的函数
-void RMSerialDriver::sendRobotStatus(const rm_referee_ros2::msg::RobotStatus::SharedPtr msg)
-{
+void RMSerialDriver::sendRobotStatus(const rm_referee_ros2::msg::RobotStatus::SharedPtr msg) {
   try {
     RobotStatusPacket packet;  // 创建数据包结构体
 
@@ -361,20 +371,19 @@ void RMSerialDriver::sendRobotStatus(const rm_referee_ros2::msg::RobotStatus::Sh
     if (msg->power_management_shooter_output) packet.power_management |= (1 << 2);
 
     // 计算 CRC 校验和
-    crc16::Append_CRC16_Check_Sum(reinterpret_cast<uint8_t *>(&packet), sizeof(packet));
+    crc16::Append_CRC16_Check_Sum(reinterpret_cast<uint8_t*>(&packet), sizeof(packet));
 
     std::vector<uint8_t> data = toVector(packet);
 
     serial_driver_->port()->send(data);
 
-  } catch (const std::exception & ex) {
+  } catch (const std::exception& ex) {
     RCLCPP_ERROR(get_logger(), "Error while sending robot status: %s", ex.what());
     reopenPort();  // 异常处理和重启串口
   }
 }
 
-void RMSerialDriver::getParams()
-{
+void RMSerialDriver::getParams() {
   using FlowControl = drivers::serial_driver::FlowControl;
   using Parity = drivers::serial_driver::Parity;
   using StopBits = drivers::serial_driver::StopBits;
@@ -386,14 +395,14 @@ void RMSerialDriver::getParams()
 
   try {
     device_name_ = declare_parameter<std::string>("device_name", "");
-  } catch (rclcpp::ParameterTypeException & ex) {
+  } catch (rclcpp::ParameterTypeException& ex) {
     RCLCPP_ERROR(get_logger(), "The device name provided was invalid");
     throw ex;
   }
 
   try {
     baud_rate = declare_parameter<int>("baud_rate", 0);
-  } catch (rclcpp::ParameterTypeException & ex) {
+  } catch (rclcpp::ParameterTypeException& ex) {
     RCLCPP_ERROR(get_logger(), "The baud_rate provided was invalid");
     throw ex;
   }
@@ -409,9 +418,10 @@ void RMSerialDriver::getParams()
       fc = FlowControl::SOFTWARE;
     } else {
       throw std::invalid_argument{
-        "The flow_control parameter must be one of: none, software, or hardware."};
+          "The flow_control parameter must be one of: none, software, or hardware."
+      };
     }
-  } catch (rclcpp::ParameterTypeException & ex) {
+  } catch (rclcpp::ParameterTypeException& ex) {
     RCLCPP_ERROR(get_logger(), "The flow_control provided was invalid");
     throw ex;
   }
@@ -428,7 +438,7 @@ void RMSerialDriver::getParams()
     } else {
       throw std::invalid_argument{"The parity parameter must be one of: none, odd, or even."};
     }
-  } catch (rclcpp::ParameterTypeException & ex) {
+  } catch (rclcpp::ParameterTypeException& ex) {
     RCLCPP_ERROR(get_logger(), "The parity provided was invalid");
     throw ex;
   }
@@ -445,17 +455,16 @@ void RMSerialDriver::getParams()
     } else {
       throw std::invalid_argument{"The stop_bits parameter must be one of: 1, 1.5, or 2."};
     }
-  } catch (rclcpp::ParameterTypeException & ex) {
+  } catch (rclcpp::ParameterTypeException& ex) {
     RCLCPP_ERROR(get_logger(), "The stop_bits provided was invalid");
     throw ex;
   }
 
   device_config_ =
-    std::make_unique<drivers::serial_driver::SerialPortConfig>(baud_rate, fc, pt, sb);
+      std::make_unique<drivers::serial_driver::SerialPortConfig>(baud_rate, fc, pt, sb);
 }
 
-void RMSerialDriver::reopenPort()
-{
+void RMSerialDriver::reopenPort() {
   RCLCPP_WARN(get_logger(), "Attempting to reopen port");
   try {
     if (serial_driver_->port()->is_open()) {
@@ -463,7 +472,7 @@ void RMSerialDriver::reopenPort()
     }
     serial_driver_->port()->open();
     RCLCPP_INFO(get_logger(), "Successfully reopened port");
-  } catch (const std::exception & ex) {
+  } catch (const std::exception& ex) {
     RCLCPP_ERROR(get_logger(), "Error while reopening port: %s", ex.what());
     if (rclcpp::ok()) {
       rclcpp::sleep_for(std::chrono::seconds(1));
@@ -472,29 +481,28 @@ void RMSerialDriver::reopenPort()
   }
 }
 
-void RMSerialDriver::setParam(const rclcpp::Parameter & param)
-{
+void RMSerialDriver::setParam(const rclcpp::Parameter& param) {
   if (!detector_param_client_->service_is_ready()) {
     RCLCPP_WARN(get_logger(), "Armor service not ready, skipping parameter set");
     return;
   }
 
-  if (
-    !set_param_future_.valid() ||
-    set_param_future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+  if (!set_param_future_.valid() ||
+      set_param_future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
     RCLCPP_INFO(get_logger(), "Setting armor detect_color to %ld...", param.as_int());
 
     set_param_future_ = detector_param_client_->set_parameters(
-      {param}, [this, param](const ResultFuturePtr & results) {
-        for (const auto & result : results.get()) {
-          if (!result.successful) {
-            RCLCPP_ERROR(get_logger(), "Failed to set parameter: %s", result.reason.c_str());
-            return;
+        {param}, [this, param](const ResultFuturePtr& results) {
+          for (const auto& result : results.get()) {
+            if (!result.successful) {
+              RCLCPP_ERROR(get_logger(), "Failed to set parameter: %s", result.reason.c_str());
+              return;
+            }
           }
+          RCLCPP_INFO(get_logger(), "Successfully set armor detect_color to %ld!", param.as_int());
+          initial_set_param_ = true;
         }
-        RCLCPP_INFO(get_logger(), "Successfully set armor detect_color to %ld!", param.as_int());
-        initial_set_param_ = true;
-      });
+    );
   }
 
   if (!rune_detector_param_client_->service_is_ready()) {
@@ -502,26 +510,27 @@ void RMSerialDriver::setParam(const rclcpp::Parameter & param)
     return;
   }
 
-  if (
-    !set_rune_detector_param_future_.valid() ||
-    set_rune_detector_param_future_.wait_for(std::chrono::seconds(0)) ==
-      std::future_status::ready) {
+  if (!set_rune_detector_param_future_.valid() ||
+      set_rune_detector_param_future_.wait_for(std::chrono::seconds(0)) ==
+          std::future_status::ready) {
     RCLCPP_INFO(get_logger(), "Setting rune detect_color to %ld...", param.as_int());
     set_rune_detector_param_future_ = rune_detector_param_client_->set_parameters(
-      {param}, [this, param](const ResultFuturePtr & results) {
-        for (const auto & result : results.get()) {
-          if (!result.successful) {
-            RCLCPP_ERROR(get_logger(), "Failed to set parameter: %s", result.reason.c_str());
-            return;
+        {param}, [this, param](const ResultFuturePtr& results) {
+          for (const auto& result : results.get()) {
+            if (!result.successful) {
+              RCLCPP_ERROR(get_logger(), "Failed to set parameter: %s", result.reason.c_str());
+              return;
+            }
           }
+          RCLCPP_INFO(
+              get_logger(), "Successfully set rune detect_color to %ld!", 1 - param.as_int()
+          );
         }
-        RCLCPP_INFO(get_logger(), "Successfully set rune detect_color to %ld!", 1 - param.as_int());
-      });
+    );
   }
 }
 
-void RMSerialDriver::resetTracker()
-{
+void RMSerialDriver::resetTracker() {
   if (!reset_tracker_client_->service_is_ready()) {
     RCLCPP_WARN(get_logger(), "Service not ready, skipping tracker reset");
     return;
