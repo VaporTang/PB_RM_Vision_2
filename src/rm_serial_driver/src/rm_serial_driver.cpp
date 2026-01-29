@@ -209,15 +209,40 @@ void RMSerialDriver::receiveDataVision()
         // 可选：在这里添加一些调试打印，但不要太频繁
       }
 
-      // --- 阶段二：读取负载 ---
-      // 既然已经拿到了 0x5A，那么剩下的数据长度是确定的
-      // 大小 = 结构体总大小 - 1 (帧头已被读取)
-      data.resize(sizeof(ReceivePacketVision) - 1);
-      serial_driver_->port()->receive(data);
+      // // --- 阶段二：读取负载 ---
+      // data.resize(sizeof(ReceivePacketVision) - 1);
+      // serial_driver_->port()->receive(data);
 
-      // --- 阶段三：重组与校验 ---
-      // 将帧头插回数据最前端，还原完整的包以便校验
-      data.insert(data.begin(), header[0]);
+      // // --- 阶段三：重组与校验 ---
+      // data.insert(data.begin(), header[0]);
+
+      // --- 阶段二：读取负载 (修改后) ---
+      // 这里的目标是：确保读取到完整的 ReceivePacketVision 大小的数据
+
+      // 1. 先清空 data 并放入已经读到的帧头
+      data.clear();
+      data.push_back(header[0]);  // 放入 0x5A
+
+      // 2. 循环读取剩余字节 (总长度 - 1)
+      // 使用逐字节读取可以绝对避免“读了一半就返回”的问题
+      size_t target_size = sizeof(ReceivePacketVision);
+
+      while (data.size() < target_size && rclcpp::ok()) {
+        std::vector<uint8_t> byte_buf(1);
+        try {
+          // 每次只读1个字节，这样即便数据来得慢，也会在这里阻塞等待
+          serial_driver_->port()->receive(byte_buf);
+          data.push_back(byte_buf[0]);
+        } catch (const std::exception & ex) {
+          RCLCPP_WARN(get_logger(), "Serial receive timeout or error: %s", ex.what());
+          break;  // 跳出循环，让外层 catch 处理或重试
+        }
+      }
+
+      // 如果因为异常退出且数据没读够，直接进入下一次大循环
+      if (data.size() < target_size) {
+        continue;
+      }
 
       // 使用模板函数转换数据
       ReceivePacketVision packet = fromVector<ReceivePacketVision>(data);
@@ -228,7 +253,7 @@ void RMSerialDriver::receiveDataVision()
       if (crc_ok) {
         // --- 修改开始：打印接收成功日志 ---
         // 使用限速打印（每 1000 毫秒打印一次），避免高频数据刷屏
-        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Receive packet successfully!");
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 100, "Receive packet successfully!");
 
         // --- 阶段四：业务逻辑（保持原样）---
         uint8_t detect_color = packet.flags & 0x01;
