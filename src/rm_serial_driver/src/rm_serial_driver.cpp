@@ -1,23 +1,24 @@
 /**
-  ****************************(C) COPYRIGHT 2023 Polarbear*************************
+  ****************************(C) COPYRIGHT 2026 森林狼*************************
   * @file       rm_serial_driver.cpp
-  * @brief      串口通信模块
-  * @note       感谢@ChenJun创建本模块并开源，
-  *             现内容为北极熊基于开源模块进行修改并适配自己的车车后的结果。
+  * @brief      RoboMaster 串口通信驱动模块
+  * @note       基于 ChenJun 的开源模块进行适配修改。
+  *             本模块主要负责视觉数据接收、云台/底盘控制指令发送以及裁判系统数据转发。
   * @history
   *  Version    Date            Author          Modification
   *  V1.0.0     2022            ChenJun         1. done
   *  V1.0.1     2023-12-11      Penguin         1. 添加与rm_rune_dector_node模块连接的Client
   *  V1.0.2     2024-3-1        LihanChen       1. 添加导航数据包，并重命名packet和相关函数
-  *
+  *  V1.0.3     2026-1-29       VaporTang       1. 修复原有接收数据帧头读取问题
   @verbatim
   =================================================================================
 
   =================================================================================
   @endverbatim
-  ****************************(C) COPYRIGHT 2023 Polarbear*************************
+  ****************************(C) COPYRIGHT 2026 森林狼*************************
   */
 
+// ROS 2 Headers
 #include <tf2/LinearMath/Quaternion.h>
 
 #include <rclcpp/logging.hpp>
@@ -49,13 +50,14 @@ RMSerialDriver::RMSerialDriver(const rclcpp::NodeOptions& options)
       serial_driver_{new drivers::serial_driver::SerialDriver(*owned_ctx_)} {
   RCLCPP_INFO(get_logger(), "Start RMSerialDriver!");
 
+  // Initialize parameters
   getParams();
 
   // TF broadcaster
   timestamp_offset_ = this->declare_parameter("timestamp_offset", 0.0);
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
-  // Create Publisher
+  // Publishers
   latency_pub_ = this->create_publisher<std_msgs::msg::Float64>("/latency", 10);
   marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/aiming_point", 10);
 
@@ -67,6 +69,7 @@ RMSerialDriver::RMSerialDriver(const rclcpp::NodeOptions& options)
   // Tracker reset service client
   reset_tracker_client_ = this->create_client<std_srvs::srv::Trigger>("/tracker/reset");
 
+  // Initialize serial port
   try {
     serial_driver_->init_port(device_name_, *device_config_);
     if (!serial_driver_->port()->is_open()) {
@@ -80,6 +83,7 @@ RMSerialDriver::RMSerialDriver(const rclcpp::NodeOptions& options)
     throw ex;
   }
 
+  // Initialize visualization Marker properties
   aiming_point_.header.frame_id = "odom";
   aiming_point_.ns = "aiming_point";
   aiming_point_.type = visualization_msgs::msg::Marker::SPHERE;
@@ -127,95 +131,89 @@ RMSerialDriver::~RMSerialDriver() {
   }
 }
 
+/**
+ * @brief 接收视觉与下位机数据的线程函数
+ * @details 采用状态机逻辑：同步帧头 -> 读取定长负载 -> CRC校验 -> 业务处理。
+ * 使用逐字节读取策略以应对串口通信中的粘包或断包情况。
+ */
 void RMSerialDriver::receiveDataVision() {
-  // 1. 预分配内存（移出循环，避免频繁 new/delete）
+  // 预分配内存，避免在 while 循环中频繁申请释放带来的开销
   std::vector<uint8_t> header(1);
   std::vector<uint8_t> data;
-  // 预留足够空间，避免 vector 自动扩容带来的拷贝开销
   data.reserve(sizeof(ReceivePacketVision));
 
   while (rclcpp::ok()) {
     try {
-      // --- 阶段一：同步（寻找帧头）---
-      // 持续读取单字节，直到找到帧头 0x5A
+      // --- 阶段一：帧头同步 (Frame Header Sync) ---
+      // 持续读取单字节，直到匹配帧头 0x5A
       while (rclcpp::ok()) {
         serial_driver_->port()->receive(header);
 
         if (header.empty()) {
-          continue;  // 超时未读到数据，重试
+          continue;  // 读空，重试
         }
 
         if (header[0] == 0x5A) {
-          break;  // 找到帧头
+          break;  // 成功匹配帧头
         }
-        // 如果不是帧头，继续循环读取下一个字节，直到找到为止
-        // 可选：在这里添加一些调试打印，但不要太频繁
       }
 
-      // // --- 阶段二：读取负载 ---
-      // data.resize(sizeof(ReceivePacketVision) - 1);
-      // serial_driver_->port()->receive(data);
+      // --- 阶段二：读取负载 (Read Payload) ---
+      // 目标：读取 ReceivePacketVision 结构体大小的完整数据
+      // 策略：逐字节阻塞读取，直到填满 buffer，防止 read 返回部分数据导致解析错误
 
-      // // --- 阶段三：重组与校验 ---
-      // data.insert(data.begin(), header[0]);
-
-      // --- 阶段二：读取负载 (修改后) ---
-      // 这里的目标是：确保读取到完整的 ReceivePacketVision 大小的数据
-
-      // 1. 先清空 data 并放入已经读到的帧头
       data.clear();
-      data.push_back(header[0]);  // 放入 0x5A
+      data.push_back(header[0]);  // 放入已匹配的帧头 0x5A
 
-      // 2. 循环读取剩余字节 (总长度 - 1)
-      // 使用逐字节读取可以绝对避免“读了一半就返回”的问题
       size_t target_size = sizeof(ReceivePacketVision);
 
       while (data.size() < target_size && rclcpp::ok()) {
         std::vector<uint8_t> byte_buf(1);
         try {
-          // 每次只读1个字节，这样即便数据来得慢，也会在这里阻塞等待
           serial_driver_->port()->receive(byte_buf);
           data.push_back(byte_buf[0]);
         } catch (const std::exception& ex) {
           RCLCPP_WARN(get_logger(), "Serial receive timeout or error: %s", ex.what());
-          break;  // 跳出循环，让外层 catch 处理或重试
+          break;  // 异常中断，交由外层处理或重置同步
         }
       }
 
-      // 如果因为异常退出且数据没读够，直接进入下一次大循环
+      // 若读取未完成（如中途异常），丢弃本帧，重新寻找帧头
       if (data.size() < target_size) {
         continue;
       }
 
-      // 使用模板函数转换数据
+      // --- 阶段三：反序列化与校验 (Deserialize & Check) ---
       ReceivePacketVision packet = fromVector<ReceivePacketVision>(data);
 
       bool crc_ok =
           crc16::Verify_CRC16_Check_Sum(reinterpret_cast<const uint8_t*>(&packet), sizeof(packet));
 
       if (crc_ok) {
-        // 使用 stringstream 将数据转换为 HEX 字符串
+        // Debug: 打印接收到的原始 HEX 数据 (限速 100ms 一次)
         std::stringstream ss;
         ss << std::hex << std::uppercase << std::setfill('0');
         for (const auto& byte : data) {
           ss << std::setw(2) << static_cast<int>(byte) << " ";
         }
-        // --- 修改开始：打印接收成功日志 ---
-        // 使用限速打印（每 1000 毫秒打印一次），避免高频数据刷屏
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 100, "Receive packet successfully!");
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 100, "Data HEX: %s", ss.str().c_str());
 
-        // --- 阶段四：业务逻辑（保持原样）---
+        // --- 阶段四：业务逻辑处理 ---
+
+        // 1. 处理颜色切换逻辑
         uint8_t detect_color = packet.flags & 0x01;
         if (!initial_set_param_ || detect_color != previous_receive_color_) {
           setParam(rclcpp::Parameter("detect_color", detect_color));
           previous_receive_color_ = detect_color;
         }
 
+        // 2. 处理重置 Tracker 请求
         if (packet.flags & 0x02) {
           resetTracker();
         }
 
+        // 3. 发布 TF 变换
         geometry_msgs::msg::TransformStamped t;
         timestamp_offset_ = this->get_parameter("timestamp_offset").as_double();
         t.header.stamp = this->now() + rclcpp::Duration::from_seconds(timestamp_offset_);
@@ -226,6 +224,7 @@ void RMSerialDriver::receiveDataVision() {
         t.transform.rotation = tf2::toMsg(q);
         tf_broadcaster_->sendTransform(t);
 
+        // 4. 发布调试用瞄准点 (Aiming Point)
         if (abs(packet.aim_x) > 0.01) {
           aiming_point_.header.stamp = this->now();
           aiming_point_.pose.position.x = packet.aim_x;
@@ -235,9 +234,7 @@ void RMSerialDriver::receiveDataVision() {
         }
       } else {
         // CRC 校验失败
-        // 注意：这里不需要做特殊处理，循环会回到开头，重新寻找下一个 0x5A
         RCLCPP_ERROR(get_logger(), "CRC error!");
-        // 如果 CRC 错误，也建议打印出来看看错在哪里
         std::stringstream ss;
         ss << std::hex << std::uppercase << std::setfill('0');
         for (const auto& byte : data) {
@@ -247,7 +244,7 @@ void RMSerialDriver::receiveDataVision() {
       }
 
     } catch (const std::exception& ex) {
-      // 串口底层错误（如拔掉USB）
+      // 严重错误（如设备断开），尝试重连
       RCLCPP_ERROR_THROTTLE(
           get_logger(), *get_clock(), 20, "Error while receiving data: %s", ex.what()
       );
@@ -256,6 +253,10 @@ void RMSerialDriver::receiveDataVision() {
   }
 }
 
+/**
+ * @brief 发送自瞄视觉解算数据
+ * @param msg 包含目标位置、速度的 Target 消息
+ */
 void RMSerialDriver::sendDataVision(const auto_aim_interfaces::msg::Target::SharedPtr msg) {
   const static std::map<std::string, uint8_t> ID_UNIT8_MAP{
       {"", 0},
@@ -292,6 +293,7 @@ void RMSerialDriver::sendDataVision(const auto_aim_interfaces::msg::Target::Shar
 
     serial_driver_->port()->send(data);
 
+    // 计算并发布延迟
     std_msgs::msg::Float64 latency;
     latency.data = (this->now() - msg->header.stamp).seconds() * 1000.0;
     RCLCPP_DEBUG_STREAM(get_logger(), "Total latency: " + std::to_string(latency.data) + "ms");
@@ -302,6 +304,10 @@ void RMSerialDriver::sendDataVision(const auto_aim_interfaces::msg::Target::Shar
   }
 }
 
+/**
+ * @brief 发送底盘控制指令 (Twist)
+ * @param msg 包含线速度和角速度的 Twist 消息
+ */
 void RMSerialDriver::sendDataTwist(const geometry_msgs::msg::Twist::SharedPtr msg) {
   try {
     SendPacketTwist packet;
@@ -323,7 +329,10 @@ void RMSerialDriver::sendDataTwist(const geometry_msgs::msg::Twist::SharedPtr ms
   }
 }
 
-// 发送射击数据的函数
+/**
+ * @brief 发送射击状态数据
+ * @param msg 裁判系统射击数据
+ */
 void RMSerialDriver::sendShootData(const rm_referee_ros2::msg::ShootData::SharedPtr msg) {
   try {
     ShootDataPacket packet;  // 创建数据包结构体
@@ -347,7 +356,10 @@ void RMSerialDriver::sendShootData(const rm_referee_ros2::msg::ShootData::Shared
   }
 }
 
-// 发送比赛机器人血量数据的函数
+/**
+ * @brief 发送机器人自身状态数据（血量、功率限制等）
+ * @param msg 裁判系统机器人状态数据
+ */
 void RMSerialDriver::sendRobotStatus(const rm_referee_ros2::msg::RobotStatus::SharedPtr msg) {
   try {
     RobotStatusPacket packet;  // 创建数据包结构体
@@ -360,11 +372,9 @@ void RMSerialDriver::sendRobotStatus(const rm_referee_ros2::msg::RobotStatus::Sh
     packet.shooter_barrel_cooling_value = msg->shooter_barrel_cooling_value;
     packet.shooter_barrel_heat_limit = msg->shooter_barrel_heat_limit;
     packet.chassis_power_limit = msg->chassis_power_limit;
-    // packet.power_management_gimbal_output = msg->power_management_gimbal_output;
-    // packet.power_management_chassis_output = msg->power_management_chassis_output;
-    // packet.power_management_shooter_output = msg->power_management_shooter_output;
 
-    // 修改处：手动进行打包 (Packing)
+    // 将布尔类型的电源输出状态压缩到位掩码 (Bitmask) 中
+    // Bit 0: Gimbal, Bit 1: Chassis, Bit 2: Shooter
     packet.power_management = 0x00;  // 初始化
     if (msg->power_management_gimbal_output) packet.power_management |= (1 << 0);
     if (msg->power_management_chassis_output) packet.power_management |= (1 << 1);
@@ -383,6 +393,9 @@ void RMSerialDriver::sendRobotStatus(const rm_referee_ros2::msg::RobotStatus::Sh
   }
 }
 
+/**
+ * @brief 加载并校验 ROS 参数
+ */
 void RMSerialDriver::getParams() {
   using FlowControl = drivers::serial_driver::FlowControl;
   using Parity = drivers::serial_driver::Parity;
@@ -464,6 +477,10 @@ void RMSerialDriver::getParams() {
       std::make_unique<drivers::serial_driver::SerialPortConfig>(baud_rate, fc, pt, sb);
 }
 
+/**
+ * @brief 尝试重启串口
+ * @details 当串口发生异常断开时调用，会无限尝试重连直到成功。
+ */
 void RMSerialDriver::reopenPort() {
   RCLCPP_WARN(get_logger(), "Attempting to reopen port");
   try {
@@ -481,7 +498,12 @@ void RMSerialDriver::reopenPort() {
   }
 }
 
+/**
+ * @brief 设置外部节点（检测器）的参数
+ * @param param 需要设置的 ROS 参数
+ */
 void RMSerialDriver::setParam(const rclcpp::Parameter& param) {
+  // 设置 armor_detector 参数
   if (!detector_param_client_->service_is_ready()) {
     RCLCPP_WARN(get_logger(), "Armor service not ready, skipping parameter set");
     return;
@@ -505,6 +527,7 @@ void RMSerialDriver::setParam(const rclcpp::Parameter& param) {
     );
   }
 
+  // 设置 rm_rune_detector 参数
   if (!rune_detector_param_client_->service_is_ready()) {
     RCLCPP_WARN(get_logger(), "Rune service not ready, skipping parameter set");
     return;
@@ -543,6 +566,7 @@ void RMSerialDriver::resetTracker() {
 
 }  // namespace rm_serial_driver
 
+// Register Node Macro
 #include "rclcpp_components/register_node_macro.hpp"
 
 // Register the component with class_loader.
